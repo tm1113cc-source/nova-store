@@ -1,7 +1,13 @@
 const http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
 const PORT=process.env.PORT||3000, ROOT=__dirname, DB=path.join(ROOT,'data.json');
-const ADMIN_USER=process.env.ADMIN_USER||'admin', ADMIN_PASS=process.env.ADMIN_PASS||'change-me-now';
-const sessions=new Set();
+const ADMIN_USER=process.env.ADMIN_USER||'admin', ADMIN_PASS=process.env.ADMIN_PASS||'';
+if(!ADMIN_PASS||ADMIN_PASS==='change-me-now'){console.error('FATAL: set a strong ADMIN_PASS environment variable.');process.exit(1)}
+const sessions=new Map(),SESSION_MS=12*3600*1000,fails=new Map(),MAX_FAILS=5,LOCK_MS=15*60*1000;
+function ip(req){return String(req.headers['x-forwarded-for']||req.socket.remoteAddress||'').split(',')[0].trim()}
+function same(a,b){const h=x=>crypto.createHash('sha256').update(String(x)).digest();return crypto.timingSafeEqual(h(a),h(b))}
+function locked(k){const f=fails.get(k);if(!f||!f.until)return 0;if(f.until>Date.now())return f.until-Date.now();fails.delete(k);return 0}
+function fail(k){const f=fails.get(k)||{n:0};if(Date.now()-(f.t||0)>LOCK_MS)f.n=0;f.t=Date.now();if(++f.n>=MAX_FAILS){f.until=Date.now()+LOCK_MS;f.n=0}fails.set(k,f)}
+setInterval(()=>{const n=Date.now();sessions.forEach((e,t)=>{if(e<n)sessions.delete(t)});fails.forEach((f,k)=>{if(n-f.t>LOCK_MS&&!(f.until>n))fails.delete(k)})},600000).unref();
 function seed(){return {categories:[{id:1,name:'AI 工具'},{id:2,name:'创作工具'},{id:3,name:'会员服务'},{id:4,name:'开发工具'},{id:5,name:'效率工具'}],products:[
 {id:1,name:'视频剪辑 Pro｜1个月',price:17,stock:20,category_id:2,icon:'✂',badge:'推荐',status:1},
 {id:2,name:'AI Plus｜月度会员',price:29,stock:15,category_id:1,icon:'◎',badge:'推荐',status:1},
@@ -18,7 +24,7 @@ function write(d){fs.writeFileSync(DB,JSON.stringify(d,null,2))}
 function json(res,status,obj){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(obj))}
 function body(req){return new Promise((ok,no)=>{let s='';req.on('data',d=>{s+=d;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch(e){no(e)}})})}
 function token(req){return (req.headers.authorization||'').replace('Bearer ','')}
-function auth(req){return sessions.has(token(req))}
+function auth(req){const t=token(req),e=sessions.get(t);if(!e)return false;if(e<Date.now()){sessions.delete(t);return false}return true}
 function products(db){return db.products.filter(p=>p.status).map(p=>({...p,category_name:(db.categories.find(c=>c.id==p.category_id)||{}).name||''}))}
 const server=http.createServer(async(req,res)=>{
  try{
@@ -26,7 +32,7 @@ const server=http.createServer(async(req,res)=>{
   if(u.pathname==='/api/products'&&req.method==='GET')return json(res,200,products(db));
   if(u.pathname==='/api/settings'&&req.method==='GET')return json(res,200,db.settings);
   if(u.pathname==='/api/orders'&&req.method==='POST'){const b=await body(req),p=db.products.find(x=>x.id===+b.product_id&&x.status);if(!p)return json(res,404,{error:'商品不存在'});if(!b.email)return json(res,400,{error:'缺少邮箱'});if(p.stock<1)return json(res,400,{error:'库存不足'});p.stock--;const o={id:Date.now(),order_no:'N'+Date.now(),product_id:p.id,product_name:p.name,amount:p.price,email:b.email,status:'待处理',created_at:new Date().toISOString()};db.orders.unshift(o);write(db);return json(res,201,o)}
-  if(u.pathname==='/api/admin/login'&&req.method==='POST'){const b=await body(req);if(b.username!==ADMIN_USER||b.password!==ADMIN_PASS)return json(res,401,{error:'账号或密码错误'});const t=crypto.randomBytes(24).toString('hex');sessions.add(t);return json(res,200,{token:t})}
+  if(u.pathname==='/api/admin/login'&&req.method==='POST'){const k=ip(req),w=locked(k);if(w)return json(res,429,{error:'尝试次数过多，请 '+Math.ceil(w/60000)+' 分钟后再试'});const b=await body(req);if(!same(b.username,ADMIN_USER)|!same(b.password,ADMIN_PASS)){fail(k);return json(res,401,{error:'账号或密码错误'})}fails.delete(k);const t=crypto.randomBytes(24).toString('hex');sessions.set(t,Date.now()+SESSION_MS);return json(res,200,{token:t})}
   if(u.pathname.startsWith('/api/admin/')){if(!auth(req))return json(res,401,{error:'未登录'});
    if(u.pathname==='/api/admin/dashboard')return json(res,200,{products:db.products.length,orders:db.orders.length,revenue:db.orders.reduce((s,o)=>s+o.amount,0),low_stock:db.products.filter(p=>p.stock<5).length});
    if(u.pathname==='/api/admin/products'&&req.method==='GET')return json(res,200,db.products);
@@ -39,6 +45,6 @@ const server=http.createServer(async(req,res)=>{
   const pages={'/':'index.html','/index.html':'index.html','/admin':'admin.html','/admin/':'admin.html'};
   if(pages[u.pathname]){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return fs.createReadStream(path.join(ROOT,pages[u.pathname])).pipe(res)}
   res.writeHead(404);res.end('Not found');
- }catch(e){json(res,500,{error:'服务器错误',detail:e.message})}
+ }catch(e){console.error(e);json(res,500,{error:'服务器错误'})}
 });
 server.listen(PORT,()=>console.log(`NOVA Store: http://localhost:${PORT}  Admin: http://localhost:${PORT}/admin`));
