@@ -40,7 +40,8 @@ const server=http.createServer(async(req,res)=>{
    let m=u.pathname.match(/^\/api\/admin\/products\/(\d+)$/);if(m&&req.method==='PUT'){const b=await body(req),p=db.products.find(x=>x.id===+m[1]);if(!p)return json(res,404,{error:'不存在'});Object.assign(p,b,{price:+b.price,stock:+b.stock,category_id:+b.category_id,status:+b.status});write(db);return json(res,200,p)}
    if(m&&req.method==='DELETE'){db.products=db.products.filter(x=>x.id!==+m[1]);write(db);return json(res,200,{ok:true})}
    if(u.pathname==='/api/admin/orders'&&req.method==='GET')return json(res,200,db.orders);
-   let om=u.pathname.match(/^\/api\/admin\/orders\/(\d+)$/);if(om&&req.method==='PUT'){const b=await body(req),o=db.orders.find(x=>x.id===+om[1]);if(!o)return json(res,404,{error:'不存在'});o.status=b.status||o.status;write(db);return json(res,200,o)}
+   if(u.pathname==='/api/admin/settings'&&req.method==='PUT'){const b=await body(req);if(typeof b.announcement!=='string')return json(res,400,{error:'格式错误'});db.settings.announcement=b.announcement.trim().slice(0,500);write(db);return json(res,200,db.settings)}
+let om=u.pathname.match(/^\/api\/admin\/orders\/(\d+)$/);if(om&&req.method==='PUT'){const b=await body(req),o=db.orders.find(x=>x.id===+om[1]);if(!o)return json(res,404,{error:'不存在'});o.status=b.status||o.status;write(db);return json(res,200,o)}
   }
   const pages={'/':'index.html','/index.html':'index.html','/admin':'admin.html','/admin/':'admin.html'};
   if(pages[u.pathname]){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return fs.createReadStream(path.join(ROOT,pages[u.pathname])).pipe(res)}
