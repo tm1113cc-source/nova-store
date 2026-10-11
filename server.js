@@ -19,8 +19,21 @@ function seed(){return {categories:[{id:1,name:'AI 工具'},{id:2,name:'创作�
 {id:8,name:'创作会员｜季度',price:24,stock:16,category_id:3,icon:'◉',badge:'特惠',status:1},
 {id:9,name:'NOVA Premium｜6个月',price:44,stock:9,category_id:3,icon:'N',badge:'推荐',status:1},
 {id:10,name:'社交工具增强服务',price:12,stock:22,category_id:5,icon:'X',badge:'推荐',status:1}],orders:[],settings:{site_name:'NOVA DIGITAL STORE',announcement:'数字服务，一站直达。'}}}
-function read(){if(!fs.existsSync(DB))fs.writeFileSync(DB,JSON.stringify(seed(),null,2));return JSON.parse(fs.readFileSync(DB))}
-function write(d){fs.writeFileSync(DB,JSON.stringify(d,null,2))}
+let cache=null,pool=null,chain=Promise.resolve();
+const clone=o=>JSON.parse(JSON.stringify(o));
+function read(){if(!cache){if(!fs.existsSync(DB))fs.writeFileSync(DB,JSON.stringify(seed(),null,2));cache=JSON.parse(fs.readFileSync(DB))}return clone(cache)}
+function write(d){cache=clone(d);if(pool)persist(cache);else fs.writeFileSync(DB,JSON.stringify(d,null,2))}
+function persist(d){const j=JSON.stringify(d);chain=chain.then(()=>pool.query("insert into kv(k,v) values('db',$1) on conflict(k) do update set v=excluded.v",[j])).catch(e=>console.error('db write failed:',e.message))}
+async function init(){
+if(!process.env.DATABASE_URL)return;
+const {Pool}=require('pg');
+pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:{rejectUnauthorized:false},max:3});
+await pool.query('create table if not exists kv(k text primary key,v jsonb not null)');
+const r=await pool.query("select v from kv where k='db'");
+if(r.rows.length)cache=r.rows[0].v;
+else{cache=fs.existsSync(DB)?JSON.parse(fs.readFileSync(DB)):seed();persist(cache)}
+}
+process.on('SIGTERM',()=>chain.then(()=>process.exit(0)));
 function json(res,status,obj){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(obj))}
 function body(req){return new Promise((ok,no)=>{let s='';req.on('data',d=>{s+=d;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch(e){no(e)}})})}
 function token(req){return (req.headers.authorization||'').replace('Bearer ','')}
@@ -48,4 +61,4 @@ let om=u.pathname.match(/^\/api\/admin\/orders\/(\d+)$/);if(om&&req.method==='PU
   res.writeHead(404);res.end('Not found');
  }catch(e){console.error(e);json(res,500,{error:'服务器错误'})}
 });
-server.listen(PORT,()=>console.log(`NOVA Store: http://localhost:${PORT}  Admin: http://localhost:${PORT}/admin`));
+init().then(()=>server.listen(PORT,()=>console.log(`NOVA Store: http://localhost:${PORT}  Admin: http://localhost:${PORT}/admin`))).catch(e=>{console.error('DB init failed:',e.message);process.exit(1)});
