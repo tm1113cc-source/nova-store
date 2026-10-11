@@ -1,0 +1,44 @@
+const http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
+const PORT=process.env.PORT||3000, ROOT=__dirname, DB=path.join(ROOT,'data.json');
+const ADMIN_USER=process.env.ADMIN_USER||'admin', ADMIN_PASS=process.env.ADMIN_PASS||'change-me-now';
+const sessions=new Set();
+function seed(){return {categories:[{id:1,name:'AI 工具'},{id:2,name:'创作工具'},{id:3,name:'会员服务'},{id:4,name:'开发工具'},{id:5,name:'效率工具'}],products:[
+{id:1,name:'视频剪辑 Pro｜1个月',price:17,stock:20,category_id:2,icon:'✂',badge:'推荐',status:1},
+{id:2,name:'AI Plus｜月度会员',price:29,stock:15,category_id:1,icon:'◎',badge:'推荐',status:1},
+{id:3,name:'AI Pro｜高级会员',price:99,stock:8,category_id:1,icon:'◎',badge:'推荐',status:1},
+{id:4,name:'AI Pro｜年度方案',price:599,stock:5,category_id:1,icon:'◉',badge:'特惠',status:1},
+{id:5,name:'AI Max｜专业方案',price:899,stock:3,category_id:1,icon:'◎',badge:'推荐',status:1},
+{id:6,name:'开发者工具｜月度',price:19,stock:12,category_id:4,icon:'◇',badge:'推荐',status:1},
+{id:7,name:'智能办公套件',price:8,stock:30,category_id:5,icon:'✦',badge:'推荐',status:1},
+{id:8,name:'创作会员｜季度',price:24,stock:16,category_id:3,icon:'◉',badge:'特惠',status:1},
+{id:9,name:'NOVA Premium｜6个月',price:44,stock:9,category_id:3,icon:'N',badge:'推荐',status:1},
+{id:10,name:'社交工具增强服务',price:12,stock:22,category_id:5,icon:'X',badge:'推荐',status:1}],orders:[],settings:{site_name:'NOVA DIGITAL STORE',announcement:'数字服务，一站直达。'}}}
+function read(){if(!fs.existsSync(DB))fs.writeFileSync(DB,JSON.stringify(seed(),null,2));return JSON.parse(fs.readFileSync(DB))}
+function write(d){fs.writeFileSync(DB,JSON.stringify(d,null,2))}
+function json(res,status,obj){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(obj))}
+function body(req){return new Promise((ok,no)=>{let s='';req.on('data',d=>{s+=d;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch(e){no(e)}})})}
+function token(req){return (req.headers.authorization||'').replace('Bearer ','')}
+function auth(req){return sessions.has(token(req))}
+function products(db){return db.products.filter(p=>p.status).map(p=>({...p,category_name:(db.categories.find(c=>c.id==p.category_id)||{}).name||''}))}
+const server=http.createServer(async(req,res)=>{
+ try{
+  const u=new URL(req.url,'http://localhost'), db=read();
+  if(u.pathname==='/api/products'&&req.method==='GET')return json(res,200,products(db));
+  if(u.pathname==='/api/settings'&&req.method==='GET')return json(res,200,db.settings);
+  if(u.pathname==='/api/orders'&&req.method==='POST'){const b=await body(req),p=db.products.find(x=>x.id===+b.product_id&&x.status);if(!p)return json(res,404,{error:'商品不存在'});if(!b.email)return json(res,400,{error:'缺少邮箱'});if(p.stock<1)return json(res,400,{error:'库存不足'});p.stock--;const o={id:Date.now(),order_no:'N'+Date.now(),product_id:p.id,product_name:p.name,amount:p.price,email:b.email,status:'待处理',created_at:new Date().toISOString()};db.orders.unshift(o);write(db);return json(res,201,o)}
+  if(u.pathname==='/api/admin/login'&&req.method==='POST'){const b=await body(req);if(b.username!==ADMIN_USER||b.password!==ADMIN_PASS)return json(res,401,{error:'账号或密码错误'});const t=crypto.randomBytes(24).toString('hex');sessions.add(t);return json(res,200,{token:t})}
+  if(u.pathname.startsWith('/api/admin/')){if(!auth(req))return json(res,401,{error:'未登录'});
+   if(u.pathname==='/api/admin/dashboard')return json(res,200,{products:db.products.length,orders:db.orders.length,revenue:db.orders.reduce((s,o)=>s+o.amount,0),low_stock:db.products.filter(p=>p.stock<5).length});
+   if(u.pathname==='/api/admin/products'&&req.method==='GET')return json(res,200,db.products);
+   if(u.pathname==='/api/admin/products'&&req.method==='POST'){const b=await body(req);const p={id:Date.now(),name:b.name||'未命名商品',price:+b.price||0,stock:+b.stock||0,category_id:+b.category_id||1,icon:b.icon||'✦',badge:b.badge||'推荐',status:b.status===0?0:1};db.products.unshift(p);write(db);return json(res,201,p)}
+   let m=u.pathname.match(/^\/api\/admin\/products\/(\d+)$/);if(m&&req.method==='PUT'){const b=await body(req),p=db.products.find(x=>x.id===+m[1]);if(!p)return json(res,404,{error:'不存在'});Object.assign(p,b,{price:+b.price,stock:+b.stock,category_id:+b.category_id,status:+b.status});write(db);return json(res,200,p)}
+   if(m&&req.method==='DELETE'){db.products=db.products.filter(x=>x.id!==+m[1]);write(db);return json(res,200,{ok:true})}
+   if(u.pathname==='/api/admin/orders'&&req.method==='GET')return json(res,200,db.orders);
+   let om=u.pathname.match(/^\/api\/admin\/orders\/(\d+)$/);if(om&&req.method==='PUT'){const b=await body(req),o=db.orders.find(x=>x.id===+om[1]);if(!o)return json(res,404,{error:'不存在'});o.status=b.status||o.status;write(db);return json(res,200,o)}
+  }
+  const pages={'/':'index.html','/index.html':'index.html','/admin':'admin.html','/admin/':'admin.html'};
+  if(pages[u.pathname]){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});return fs.createReadStream(path.join(ROOT,pages[u.pathname])).pipe(res)}
+  res.writeHead(404);res.end('Not found');
+ }catch(e){json(res,500,{error:'服务器错误',detail:e.message})}
+});
+server.listen(PORT,()=>console.log(`NOVA Store: http://localhost:${PORT}  Admin: http://localhost:${PORT}/admin`));
