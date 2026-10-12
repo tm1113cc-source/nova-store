@@ -39,10 +39,13 @@ function body(req){return new Promise((ok,no)=>{let s='';req.on('data',d=>{s+=d;
 function token(req){return (req.headers.authorization||'').replace('Bearer ','')}
 function auth(req){const t=token(req),e=sessions.get(t);if(!e)return false;if(e<Date.now()){sessions.delete(t);return false}return true}
 function products(db){return db.products.filter(p=>p.status).map(p=>({...p,category_name:(db.categories.find(c=>c.id==p.category_id)||{}).name||''}))}
+const qrl=new Map();
+function qOk(ip){if(qrl.size>5000)qrl.clear();const n=Date.now(),a=(qrl.get(ip)||[]).filter(t=>n-t<6e4);if(a.length>=10){qrl.set(ip,a);return false}a.push(n);qrl.set(ip,a);return true}
 const server=http.createServer(async(req,res)=>{
  try{
   const u=new URL(req.url,'http://localhost'), db=read();
   if(u.pathname==='/api/products'&&req.method==='GET')return json(res,200,products(db));
+  if(u.pathname==='/api/order'&&req.method==='GET'){const ip=String(req.headers['x-forwarded-for']||req.socket.remoteAddress||'').split(',').pop().trim();if(!qOk(ip))return json(res,429,{error:'查询过于频繁，请稍后再试'});const q=new URL(req.url,'http://x').searchParams,no=String(q.get('no')||'').trim(),em=String(q.get('email')||'').trim().toLowerCase();const o=no&&em&&db.orders.find(x=>x.order_no===no&&String(x.email||'').trim().toLowerCase()===em);if(!o)return json(res,404,{error:'未找到订单，请核对订单号和邮箱'});return json(res,200,{order_no:o.order_no,product_name:o.product_name,amount:o.amount,status:o.status,created_at:o.created_at})}
   if(u.pathname==='/api/settings'&&req.method==='GET')return json(res,200,db.settings);
   if(u.pathname==='/api/orders'&&req.method==='POST'){const b=await body(req),p=db.products.find(x=>x.id===+b.product_id&&x.status);if(!p)return json(res,404,{error:'商品不存在'});if(!b.email)return json(res,400,{error:'缺少邮箱'});if(p.stock<1)return json(res,400,{error:'库存不足'});p.stock--;const o={id:Date.now(),order_no:'N'+Date.now(),product_id:p.id,product_name:p.name,amount:p.price,email:b.email,status:'待处理',created_at:new Date().toISOString()};db.orders.unshift(o);write(db);return json(res,201,o)}
   if(u.pathname==='/api/admin/login'&&req.method==='POST'){const k=ip(req),w=locked(k);if(w)return json(res,429,{error:'尝试次数过多，请 '+Math.ceil(w/60000)+' 分钟后再试'});const b=await body(req);if(!same(b.username,ADMIN_USER)|!same(b.password,ADMIN_PASS)){fail(k);return json(res,401,{error:'账号或密码错误'})}fails.delete(k);const t=crypto.randomBytes(24).toString('hex');sessions.set(t,Date.now()+SESSION_MS);return json(res,200,{token:t})}
